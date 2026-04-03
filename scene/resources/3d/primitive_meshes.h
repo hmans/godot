@@ -369,6 +369,37 @@ public:
 };
 
 /**
+	An icosphere — a sphere constructed by subdividing a regular icosahedron.
+	Produces more uniform triangle distribution than a UV sphere.
+*/
+class IcoSphereMesh : public PrimitiveMesh {
+	GDCLASS(IcoSphereMesh, PrimitiveMesh);
+
+private:
+	float radius = 0.5;
+	int subdivisions = 0;
+	bool flat_shading = true;
+
+protected:
+	static void _bind_methods();
+	virtual void _create_mesh_array(Array &p_arr) const override;
+
+	virtual void _update_lightmap_size() override;
+
+public:
+	static void create_mesh_array(Array &p_arr, float radius, int subdivisions = 0, bool flat_shading = true, bool p_add_uv2 = false, const float p_uv2_padding = 1.0);
+
+	void set_radius(const float p_radius);
+	float get_radius() const;
+
+	void set_subdivisions(const int p_subdivisions);
+	int get_subdivisions() const;
+
+	void set_flat_shading(const bool p_flat_shading);
+	bool get_flat_shading() const;
+};
+
+/**
 	Big donut
 */
 class TorusMesh : public PrimitiveMesh {
