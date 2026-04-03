@@ -151,6 +151,7 @@ void GDScriptDocGen::_doctype_from_gdtype(const GDType &p_gdtype, String &r_type
 		case GDType::VARIANT:
 		case GDType::RESOLVING:
 		case GDType::UNRESOLVED:
+		case GDType::NAMESPACE:
 			r_type = "Variant";
 			return;
 	}
