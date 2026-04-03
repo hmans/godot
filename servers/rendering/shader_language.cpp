@@ -8169,7 +8169,7 @@ Error ShaderLanguage::_parse_block(BlockNode *p_block, const FunctionInfo &p_fun
 				StringName name = tk.text;
 				ShaderLanguage::IdentifierType itype;
 				if (_find_identifier(p_block, true, p_function_info, name, (ShaderLanguage::DataType *)nullptr, &itype)) {
-					if (itype != IDENTIFIER_FUNCTION) {
+					if (itype != IDENTIFIER_FUNCTION && itype != IDENTIFIER_UNIFORM && itype != IDENTIFIER_VARYING && itype != IDENTIFIER_CONSTANT) {
 						_set_redefinition_error(String(name));
 						return ERR_PARSE_ERROR;
 					}
@@ -10961,7 +10961,7 @@ Error ShaderLanguage::_parse_shader(const HashMap<StringName, FunctionInfo> &p_f
 					param_name = tk.text;
 
 					if (_find_identifier(func_node->body, false, builtins, param_name, (ShaderLanguage::DataType *)nullptr, &itype)) {
-						if (itype != IDENTIFIER_FUNCTION) {
+						if (itype != IDENTIFIER_FUNCTION && itype != IDENTIFIER_UNIFORM && itype != IDENTIFIER_VARYING && itype != IDENTIFIER_CONSTANT) {
 							_set_redefinition_error(String(param_name));
 							return ERR_PARSE_ERROR;
 						}
