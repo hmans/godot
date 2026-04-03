@@ -2324,9 +2324,9 @@ void IcoSphereMesh::create_mesh_array(Array &p_arr, float radius, int subdivisio
 	};
 
 #define ADD_TANGENT(m_x, m_y, m_z, m_d) \
-	tangents.push_back(m_x);            \
-	tangents.push_back(m_y);            \
-	tangents.push_back(m_z);            \
+	tangents.push_back(m_x); \
+	tangents.push_back(m_y); \
+	tangents.push_back(m_z); \
 	tangents.push_back(m_d);
 
 	if (flat_shading) {
