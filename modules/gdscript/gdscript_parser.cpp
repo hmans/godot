@@ -764,8 +764,8 @@ void GDScriptParser::parse_program() {
 		}
 	}
 
-	if (current.type == GDScriptTokenizer::Token::CLASS_NAME || current.type == GDScriptTokenizer::Token::EXTENDS || current.type == GDScriptTokenizer::Token::IMPORT) {
-		// Set range of the class to only start at extends, class_name, or import if present.
+	if (current.type == GDScriptTokenizer::Token::CLASS_NAME || current.type == GDScriptTokenizer::Token::EXTENDS || current.type == GDScriptTokenizer::Token::IMPORT || current.type == GDScriptTokenizer::Token::NAMESPACE) {
+		// Set range of the class to only start at extends, class_name, import, or namespace if present.
 		reset_extents(head, current);
 	}
 
@@ -795,6 +795,14 @@ void GDScriptParser::parse_program() {
 				advance();
 				parse_import();
 				break;
+			case GDScriptTokenizer::Token::NAMESPACE:
+				advance();
+				if (!head->namespace_prefix.is_empty()) {
+					push_error(R"("namespace" can only be used once.)");
+				} else {
+					parse_namespace();
+				}
+				break;
 			case GDScriptTokenizer::Token::TK_EOF:
 				PUSH_PENDING_ANNOTATIONS_TO_HEAD;
 				can_have_class_or_extends = false;
@@ -821,6 +829,13 @@ void GDScriptParser::parse_program() {
 	}
 
 #undef PUSH_PENDING_ANNOTATIONS_TO_HEAD
+
+	// Apply namespace prefix to class_name if both are present.
+	if (!head->namespace_prefix.is_empty() && head->identifier != nullptr) {
+		String full_name = head->namespace_prefix + "." + String(head->identifier->name);
+		head->identifier->name = full_name;
+		head->fqcn = full_name;
+	}
 
 	for (AnnotationNode *&annotation : head->annotations) {
 		if (annotation->name == SNAME("@abstract")) {
@@ -1026,37 +1041,62 @@ void GDScriptParser::parse_class_name() {
 	}
 }
 
-void GDScriptParser::parse_import() {
-	// import Enemies.Goblin         -> imports "Goblin" as shorthand for "Enemies.Goblin"
-	// import Enemies                -> imports all Enemies.* classes by their short names
-	// import Enemies.Goblin as EG   -> imports "EG" as alias for "Enemies.Goblin"
-
-	if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier after "import".)")) {
+void GDScriptParser::parse_namespace() {
+	if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier after "namespace".)")) {
 		return;
 	}
 
-	String full_name = previous.get_identifier();
+	String ns = previous.get_identifier();
 
 	while (match(GDScriptTokenizer::Token::PERIOD)) {
-		if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier after "." in import.)")) {
+		if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier after "." in namespace.)")) {
 			return;
 		}
-		full_name += "." + previous.get_identifier();
+		ns += "." + previous.get_identifier();
 	}
 
-	if (match(GDScriptTokenizer::Token::AS)) {
-		// import Enemies.Goblin as EG
-		if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier after "as" in import.)")) {
+	current_class->namespace_prefix = ns;
+
+	// Implicitly import the namespace so all its classes are available by short name.
+	current_class->imports[ns] = ns;
+
+	end_statement("namespace statement");
+}
+
+void GDScriptParser::parse_import() {
+	// import Enemies.Goblin                    -> imports "Goblin" as shorthand
+	// import Enemies                           -> imports all Enemies.* by short name
+	// import Enemies.Goblin as EG              -> alias
+	// import Enemies.Goblin, Enemies.Boss      -> multiple imports
+
+	do {
+		if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier in import.)")) {
 			return;
 		}
-		StringName alias = previous.get_identifier();
-		current_class->imports[alias] = full_name;
-	} else {
-		// import Enemies.Goblin -> short name is "Goblin"
-		// import Enemies        -> short name is "Enemies" (wildcard, resolved at analysis time)
-		String short_name = full_name.get_slicec('.', full_name.get_slice_count(".") - 1);
-		current_class->imports[short_name] = full_name;
-	}
+
+		String full_name = previous.get_identifier();
+
+		while (match(GDScriptTokenizer::Token::PERIOD)) {
+			if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier after "." in import.)")) {
+				return;
+			}
+			full_name += "." + previous.get_identifier();
+		}
+
+		if (match(GDScriptTokenizer::Token::AS)) {
+			// import Enemies.Goblin as EG
+			if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier after "as" in import.)")) {
+				return;
+			}
+			StringName alias = previous.get_identifier();
+			current_class->imports[alias] = full_name;
+		} else {
+			// import Enemies.Goblin -> short name is "Goblin"
+			// import Enemies        -> short name is "Enemies" (wildcard)
+			String short_name = full_name.get_slicec('.', full_name.get_slice_count(".") - 1);
+			current_class->imports[short_name] = full_name;
+		}
+	} while (match(GDScriptTokenizer::Token::COMMA));
 
 	end_statement("import statement");
 }

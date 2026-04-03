@@ -757,6 +757,9 @@ public:
 		// Namespace imports: maps short name -> fully qualified class name.
 		HashMap<StringName, StringName> imports;
 
+		// Namespace prefix set by the `namespace` keyword (e.g. "Enemies").
+		String namespace_prefix;
+
 		bool extends_used = false;
 		bool onready_used = false;
 		bool is_abstract = false;
@@ -1545,6 +1548,7 @@ private:
 	void parse_program();
 	ClassNode *parse_class(bool p_is_static);
 	void parse_class_name();
+	void parse_namespace();
 	void parse_import();
 	void parse_extends();
 	void parse_class_body(bool p_is_multiline);
