@@ -799,6 +799,10 @@ void GDScriptParser::parse_program() {
 				advance();
 				if (!head->namespace_prefix.is_empty()) {
 					push_error(R"("namespace" can only be used once.)");
+					// Consume the rest of the statement to avoid cascading errors.
+					while (!check(GDScriptTokenizer::Token::NEWLINE) && !check(GDScriptTokenizer::Token::TK_EOF)) {
+						advance();
+					}
 				} else {
 					parse_namespace();
 				}
