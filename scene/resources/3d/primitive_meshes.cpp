@@ -2178,6 +2178,297 @@ bool SphereMesh::get_is_hemisphere() const {
 }
 
 /**
+  IcoSphereMesh
+*/
+
+void IcoSphereMesh::_update_lightmap_size() {
+	if (get_add_uv2()) {
+		Size2i _lightmap_size_hint;
+		float padding = get_uv2_padding();
+
+		float circumference = radius * Math::TAU;
+		_lightmap_size_hint.x = MAX(1.0, (circumference / texel_size) + padding);
+		_lightmap_size_hint.y = MAX(1.0, (circumference * 0.5 / texel_size) + padding);
+
+		set_lightmap_size_hint(_lightmap_size_hint);
+	}
+}
+
+void IcoSphereMesh::_create_mesh_array(Array &p_arr) const {
+	bool _add_uv2 = get_add_uv2();
+	float _uv2_padding = get_uv2_padding() * texel_size;
+
+	create_mesh_array(p_arr, radius, subdivisions, flat_shading, _add_uv2, _uv2_padding);
+}
+
+void IcoSphereMesh::create_mesh_array(Array &p_arr, float radius, int subdivisions, bool flat_shading, bool p_add_uv2, const float p_uv2_padding) {
+	// The golden ratio, used to construct the initial icosahedron.
+	const float phi = (1.0f + Math::sqrt(5.0f)) / 2.0f;
+
+	// --- Step 1: Build the initial icosahedron (12 vertices, 20 triangles). ---
+
+	struct Triangle {
+		int v[3];
+	};
+
+	LocalVector<Vector3> vertices;
+	LocalVector<Triangle> triangles;
+
+	// The 12 vertices of a regular icosahedron, normalized onto the unit sphere.
+	auto add_vertex = [&](float x, float y, float z) -> int {
+		int idx = vertices.size();
+		vertices.push_back(Vector3(x, y, z).normalized());
+		return idx;
+	};
+
+	add_vertex(-1, phi, 0);
+	add_vertex(1, phi, 0);
+	add_vertex(-1, -phi, 0);
+	add_vertex(1, -phi, 0);
+
+	add_vertex(0, -1, phi);
+	add_vertex(0, 1, phi);
+	add_vertex(0, -1, -phi);
+	add_vertex(0, 1, -phi);
+
+	add_vertex(phi, 0, -1);
+	add_vertex(phi, 0, 1);
+	add_vertex(-phi, 0, -1);
+	add_vertex(-phi, 0, 1);
+
+	// 20 triangles of the icosahedron (wound CCW as seen from outside).
+	triangles.push_back({ { 0, 5, 11 } });
+	triangles.push_back({ { 0, 1, 5 } });
+	triangles.push_back({ { 0, 7, 1 } });
+	triangles.push_back({ { 0, 10, 7 } });
+	triangles.push_back({ { 0, 11, 10 } });
+
+	triangles.push_back({ { 1, 9, 5 } });
+	triangles.push_back({ { 5, 4, 11 } });
+	triangles.push_back({ { 11, 2, 10 } });
+	triangles.push_back({ { 10, 6, 7 } });
+	triangles.push_back({ { 7, 8, 1 } });
+
+	triangles.push_back({ { 3, 4, 9 } });
+	triangles.push_back({ { 3, 2, 4 } });
+	triangles.push_back({ { 3, 6, 2 } });
+	triangles.push_back({ { 3, 8, 6 } });
+	triangles.push_back({ { 3, 9, 8 } });
+
+	triangles.push_back({ { 4, 5, 9 } });
+	triangles.push_back({ { 2, 11, 4 } });
+	triangles.push_back({ { 6, 10, 2 } });
+	triangles.push_back({ { 8, 7, 6 } });
+	triangles.push_back({ { 9, 1, 8 } });
+
+	// --- Step 2: Subdivide. ---
+
+	// Cache for midpoints to avoid duplicating shared edge vertices.
+	HashMap<uint64_t, int> midpoint_cache;
+
+	auto get_midpoint = [&](int a, int b) -> int {
+		// Order-independent key.
+		uint64_t key = (uint64_t)MIN(a, b) << 32 | (uint64_t)MAX(a, b);
+		if (midpoint_cache.has(key)) {
+			return midpoint_cache[key];
+		}
+		Vector3 mid = (vertices[a] + vertices[b]).normalized();
+		int idx = vertices.size();
+		vertices.push_back(mid);
+		midpoint_cache[key] = idx;
+		return idx;
+	};
+
+	for (int i = 0; i < subdivisions; i++) {
+		LocalVector<Triangle> new_triangles;
+		new_triangles.reserve(triangles.size() * 4);
+
+		for (const Triangle &tri : triangles) {
+			int m01 = get_midpoint(tri.v[0], tri.v[1]);
+			int m12 = get_midpoint(tri.v[1], tri.v[2]);
+			int m02 = get_midpoint(tri.v[0], tri.v[2]);
+
+			new_triangles.push_back({ { tri.v[0], m01, m02 } });
+			new_triangles.push_back({ { tri.v[1], m12, m01 } });
+			new_triangles.push_back({ { tri.v[2], m02, m12 } });
+			new_triangles.push_back({ { m01, m12, m02 } });
+		}
+
+		triangles = new_triangles;
+		midpoint_cache.clear();
+	}
+
+	// --- Step 3: Build the mesh arrays. ---
+
+	LocalVector<Vector3> points;
+	LocalVector<Vector3> normals;
+	LocalVector<float> tangents;
+	LocalVector<Vector2> uvs;
+	LocalVector<Vector2> uv2s;
+	LocalVector<int> indices;
+
+	// Helper to compute spherical UV from a normal vector.
+	auto spherical_uv = [](const Vector3 &n) -> Vector2 {
+		float u = 0.5f + Math::atan2(n.z, n.x) / Math::TAU;
+		float v = 0.5f - Math::asin(n.y) / Math::PI;
+		return Vector2(u, v);
+	};
+
+	// Helper to compute tangent from a normal vector.
+	auto compute_tangent = [](const Vector3 &n) -> Vector3 {
+		Vector3 t = Vector3(-n.z, 0.0f, n.x).normalized();
+		if (t.length_squared() < 0.001f) {
+			t = Vector3(1.0f, 0.0f, 0.0f);
+		}
+		return t;
+	};
+
+#define ADD_TANGENT(m_x, m_y, m_z, m_d) \
+	tangents.push_back(m_x);            \
+	tangents.push_back(m_y);            \
+	tangents.push_back(m_z);            \
+	tangents.push_back(m_d);
+
+	if (flat_shading) {
+		// Flat shading: each triangle gets its own vertices with the face normal.
+		int tri_count = triangles.size();
+		points.reserve(tri_count * 3);
+		normals.reserve(tri_count * 3);
+		tangents.reserve(tri_count * 3 * 4);
+		uvs.reserve(tri_count * 3);
+		if (p_add_uv2) {
+			uv2s.reserve(tri_count * 3);
+		}
+		indices.reserve(tri_count * 3);
+
+		int idx = 0;
+		for (const Triangle &tri : triangles) {
+			Vector3 v0 = vertices[tri.v[0]] * radius;
+			Vector3 v1 = vertices[tri.v[1]] * radius;
+			Vector3 v2 = vertices[tri.v[2]] * radius;
+
+			// Face normal from the cross product, ensured to point outward.
+			Vector3 face_normal = (v1 - v0).cross(v2 - v0).normalized();
+			Vector3 face_center = (v0 + v1 + v2) / 3.0f;
+			if (face_normal.dot(face_center) < 0.0f) {
+				face_normal = -face_normal;
+			}
+			Vector3 t = compute_tangent(face_normal);
+
+			for (int j = 0; j < 3; j++) {
+				Vector3 p = vertices[tri.v[j]] * radius;
+				Vector2 uv = spherical_uv(vertices[tri.v[j]]);
+
+				points.push_back(p);
+				normals.push_back(face_normal);
+				ADD_TANGENT(t.x, t.y, t.z, 1.0);
+				uvs.push_back(uv);
+				if (p_add_uv2) {
+					uv2s.push_back(uv);
+				}
+				indices.push_back(idx++);
+			}
+		}
+	} else {
+		// Smooth shading: shared vertices with vertex normals pointing outward.
+		int vertex_count = vertices.size();
+		points.reserve(vertex_count);
+		normals.reserve(vertex_count);
+		tangents.reserve(vertex_count * 4);
+		uvs.reserve(vertex_count);
+		if (p_add_uv2) {
+			uv2s.reserve(vertex_count);
+		}
+		indices.reserve(triangles.size() * 3);
+
+		for (int i = 0; i < vertex_count; i++) {
+			Vector3 n = vertices[i]; // Already normalized.
+			Vector3 p = n * radius;
+			Vector2 uv = spherical_uv(n);
+			Vector3 t = compute_tangent(n);
+
+			points.push_back(p);
+			normals.push_back(n);
+			ADD_TANGENT(t.x, t.y, t.z, 1.0);
+			uvs.push_back(uv);
+			if (p_add_uv2) {
+				uv2s.push_back(uv);
+			}
+		}
+
+		for (const Triangle &tri : triangles) {
+			indices.push_back(tri.v[0]);
+			indices.push_back(tri.v[1]);
+			indices.push_back(tri.v[2]);
+		}
+	}
+
+#undef ADD_TANGENT
+
+	p_arr[RSE::ARRAY_VERTEX] = Vector<Vector3>(points);
+	p_arr[RSE::ARRAY_NORMAL] = Vector<Vector3>(normals);
+	p_arr[RSE::ARRAY_TANGENT] = Vector<float>(tangents);
+	p_arr[RSE::ARRAY_TEX_UV] = Vector<Vector2>(uvs);
+	if (p_add_uv2) {
+		p_arr[RSE::ARRAY_TEX_UV2] = Vector<Vector2>(uv2s);
+	}
+	p_arr[RSE::ARRAY_INDEX] = Vector<int>(indices);
+}
+
+void IcoSphereMesh::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_radius", "radius"), &IcoSphereMesh::set_radius);
+	ClassDB::bind_method(D_METHOD("get_radius"), &IcoSphereMesh::get_radius);
+
+	ClassDB::bind_method(D_METHOD("set_subdivisions", "subdivisions"), &IcoSphereMesh::set_subdivisions);
+	ClassDB::bind_method(D_METHOD("get_subdivisions"), &IcoSphereMesh::get_subdivisions);
+
+	ClassDB::bind_method(D_METHOD("set_flat_shading", "flat_shading"), &IcoSphereMesh::set_flat_shading);
+	ClassDB::bind_method(D_METHOD("get_flat_shading"), &IcoSphereMesh::get_flat_shading);
+
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "radius", PROPERTY_HINT_RANGE, "0.001,100.0,0.001,or_greater,suffix:m"), "set_radius", "get_radius");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "subdivisions", PROPERTY_HINT_RANGE, "0,8,1"), "set_subdivisions", "get_subdivisions");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "flat_shading"), "set_flat_shading", "get_flat_shading");
+}
+
+void IcoSphereMesh::set_radius(const float p_radius) {
+	if (Math::is_equal_approx(p_radius, radius)) {
+		return;
+	}
+	radius = p_radius;
+	_update_lightmap_size();
+	request_update();
+}
+
+float IcoSphereMesh::get_radius() const {
+	return radius;
+}
+
+void IcoSphereMesh::set_subdivisions(const int p_subdivisions) {
+	if (p_subdivisions == subdivisions) {
+		return;
+	}
+	subdivisions = CLAMP(p_subdivisions, 0, 8);
+	_update_lightmap_size();
+	request_update();
+}
+
+int IcoSphereMesh::get_subdivisions() const {
+	return subdivisions;
+}
+
+void IcoSphereMesh::set_flat_shading(const bool p_flat_shading) {
+	if (p_flat_shading == flat_shading) {
+		return;
+	}
+	flat_shading = p_flat_shading;
+	request_update();
+}
+
+bool IcoSphereMesh::get_flat_shading() const {
+	return flat_shading;
+}
+
+/**
   TorusMesh
 */
 
