@@ -193,7 +193,8 @@ GDScriptDataType GDScriptCompiler::_gdtype_from_datatype(const GDScriptParser::D
 			result.builtin_type = p_datatype.builtin_type;
 			break;
 		case GDScriptParser::DataType::RESOLVING:
-		case GDScriptParser::DataType::UNRESOLVED: {
+		case GDScriptParser::DataType::UNRESOLVED:
+		case GDScriptParser::DataType::NAMESPACE: {
 			_set_error("Parser bug (please report): converting unresolved type.", nullptr);
 			return GDScriptDataType();
 		}
@@ -262,6 +263,12 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 		case GDScriptParser::Node::IDENTIFIER: {
 			// Look for identifiers in current scope.
 			const GDScriptParser::IdentifierNode *in = static_cast<const GDScriptParser::IdentifierNode *>(p_expression);
+
+			// Namespace identifiers have no runtime value — they're resolved
+			// through the subscript chain at compile time.
+			if (in->get_datatype().kind == GDScriptParser::DataType::NAMESPACE) {
+				return GDScriptCodeGenerator::Address();
+			}
 
 			StringName identifier = in->name;
 
@@ -783,6 +790,30 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 		// Indexing operator.
 		case GDScriptParser::Node::SUBSCRIPT: {
 			const GDScriptParser::SubscriptNode *subscript = static_cast<const GDScriptParser::SubscriptNode *>(p_expression);
+
+			// If the subscript resolves to a namespaced global class (e.g. Enemies.Goblin),
+			// load the class directly by its script path instead of trying to compile the
+			// namespace chain, which has no runtime representation.
+			if (subscript->is_attribute && subscript->base->get_datatype().kind == GDScriptParser::DataType::NAMESPACE) {
+				GDScriptParser::DataType subscript_type = subscript->get_datatype();
+				if (subscript_type.kind == GDScriptParser::DataType::CLASS && !subscript_type.script_path.is_empty()) {
+					Error err = OK;
+					Ref<Resource> res = GDScriptCache::get_shallow_script(subscript_type.script_path, err);
+					if (err == OK && res.is_valid()) {
+						GDScriptCodeGenerator::Address addr = codegen.add_constant(res);
+						return addr;
+					}
+				} else if (subscript_type.kind == GDScriptParser::DataType::SCRIPT && subscript_type.script_type.is_valid()) {
+					GDScriptCodeGenerator::Address addr = codegen.add_constant(subscript_type.script_type);
+					return addr;
+				} else if (subscript_type.kind == GDScriptParser::DataType::NAMESPACE) {
+					// Deeper namespace prefix (e.g. Enemies.Types in Enemies.Types.Goblin).
+					// This will be handled when the outer subscript compiles.
+					// Return a dummy address; the outer subscript will handle this.
+					return GDScriptCodeGenerator::Address();
+				}
+			}
+
 			GDScriptCodeGenerator::Address result = codegen.add_temporary(_gdtype_from_datatype(subscript->get_datatype(), codegen.script));
 
 			GDScriptCodeGenerator::Address base = _parse_expression(codegen, r_error, subscript->base);

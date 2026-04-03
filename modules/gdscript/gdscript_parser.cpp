@@ -764,8 +764,8 @@ void GDScriptParser::parse_program() {
 		}
 	}
 
-	if (current.type == GDScriptTokenizer::Token::CLASS_NAME || current.type == GDScriptTokenizer::Token::EXTENDS) {
-		// Set range of the class to only start at extends or class_name if present.
+	if (current.type == GDScriptTokenizer::Token::CLASS_NAME || current.type == GDScriptTokenizer::Token::EXTENDS || current.type == GDScriptTokenizer::Token::IMPORT) {
+		// Set range of the class to only start at extends, class_name, or import if present.
 		reset_extents(head, current);
 	}
 
@@ -790,6 +790,10 @@ void GDScriptParser::parse_program() {
 					parse_extends();
 					end_statement("superclass");
 				}
+				break;
+			case GDScriptTokenizer::Token::IMPORT:
+				advance();
+				parse_import();
 				break;
 			case GDScriptTokenizer::Token::TK_EOF:
 				PUSH_PENDING_ANNOTATIONS_TO_HEAD;
@@ -993,7 +997,18 @@ GDScriptParser::ClassNode *GDScriptParser::parse_class(bool p_is_static) {
 void GDScriptParser::parse_class_name() {
 	if (consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier for the global class name after "class_name".)")) {
 		current_class->identifier = parse_identifier();
-		current_class->fqcn = String(current_class->identifier->name);
+		String full_name = String(current_class->identifier->name);
+
+		// Allow dotted names for namespacing (e.g. "class_name Enemies.Goblin").
+		while (match(GDScriptTokenizer::Token::PERIOD)) {
+			if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier after "." in class name.)")) {
+				break;
+			}
+			full_name += "." + previous.get_identifier();
+		}
+
+		current_class->identifier->name = full_name;
+		current_class->fqcn = full_name;
 	}
 
 	if (script_path.begins_with("res://") && script_path.contains("::")) {
@@ -1009,6 +1024,41 @@ void GDScriptParser::parse_class_name() {
 	} else {
 		end_statement("class_name statement");
 	}
+}
+
+void GDScriptParser::parse_import() {
+	// import Enemies.Goblin         -> imports "Goblin" as shorthand for "Enemies.Goblin"
+	// import Enemies                -> imports all Enemies.* classes by their short names
+	// import Enemies.Goblin as EG   -> imports "EG" as alias for "Enemies.Goblin"
+
+	if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier after "import".)")) {
+		return;
+	}
+
+	String full_name = previous.get_identifier();
+
+	while (match(GDScriptTokenizer::Token::PERIOD)) {
+		if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier after "." in import.)")) {
+			return;
+		}
+		full_name += "." + previous.get_identifier();
+	}
+
+	if (match(GDScriptTokenizer::Token::AS)) {
+		// import Enemies.Goblin as EG
+		if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"(Expected identifier after "as" in import.)")) {
+			return;
+		}
+		StringName alias = previous.get_identifier();
+		current_class->imports[alias] = full_name;
+	} else {
+		// import Enemies.Goblin -> short name is "Goblin"
+		// import Enemies        -> short name is "Enemies" (wildcard, resolved at analysis time)
+		String short_name = full_name.get_slicec('.', full_name.get_slice_count(".") - 1);
+		current_class->imports[short_name] = full_name;
+	}
+
+	end_statement("import statement");
 }
 
 void GDScriptParser::parse_extends() {
@@ -4318,6 +4368,7 @@ GDScriptParser::ParseRule *GDScriptParser::get_rule(GDScriptTokenizer::Token::Ty
 		{ nullptr,                                          nullptr,                                        PREC_NONE }, // ENUM,
 		{ nullptr,                                          nullptr,                                        PREC_NONE }, // EXTENDS,
 		{ &GDScriptParser::parse_lambda,                    nullptr,                                        PREC_NONE }, // FUNC,
+		{ nullptr,                                          nullptr,                                        PREC_NONE }, // IMPORT,
 		{ nullptr,                                          &GDScriptParser::parse_binary_operator,      	PREC_CONTENT_TEST }, // TK_IN,
 		{ nullptr,                                          &GDScriptParser::parse_type_test,            	PREC_TYPE_TEST }, // IS,
 		{ nullptr,                                          nullptr,                                        PREC_NONE }, // NAMESPACE,
@@ -5377,6 +5428,8 @@ String GDScriptParser::DataType::to_string() const {
 			// or the fully qualified class name of the script defining the enum
 			return String(native_type).get_file(); // Remove path, keep filename
 		}
+		case NAMESPACE:
+			return native_type.operator String();
 		case RESOLVING:
 		case UNRESOLVED:
 			return "<unresolved type>";
@@ -5432,6 +5485,7 @@ PropertyInfo GDScriptParser::DataType::to_property_info(const String &p_name) co
 					case VARIANT:
 					case RESOLVING:
 					case UNRESOLVED:
+					case NAMESPACE:
 						break;
 				}
 			} else if (builtin_type == Variant::DICTIONARY && has_container_element_types()) {
@@ -5542,6 +5596,7 @@ PropertyInfo GDScriptParser::DataType::to_property_info(const String &p_name) co
 		case VARIANT:
 		case RESOLVING:
 		case UNRESOLVED:
+		case NAMESPACE:
 			result.usage |= PROPERTY_USAGE_NIL_IS_VARIANT;
 			break;
 	}

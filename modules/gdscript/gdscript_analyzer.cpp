@@ -568,6 +568,92 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 					}
 				}
 
+				// If not found, check imports.
+				if (!found) {
+					const HashMap<StringName, StringName> &imports = parser->head->imports;
+
+					// Direct import.
+					if (imports.has(name)) {
+						const StringName &qualified_name = imports[name];
+						if (ScriptServer::is_global_class(qualified_name)) {
+							String base_path = ScriptServer::get_global_class_path(qualified_name);
+							if (GDScript::is_canonically_equal_paths(base_path, parser->script_path)) {
+								base = parser->head->get_datatype();
+							} else {
+								Ref<GDScriptParserRef> base_parser = parser->get_depended_parser_for(base_path);
+								if (base_parser.is_null()) {
+									push_error(vformat(R"(Could not resolve super class "%s".)", qualified_name), id);
+									return ERR_PARSE_ERROR;
+								}
+								Error err = base_parser->raise_status(GDScriptParserRef::INHERITANCE_SOLVED);
+								if (err != OK) {
+									push_error(vformat(R"(Could not resolve super class inheritance from "%s".)", qualified_name), id);
+									return err;
+								}
+								base = base_parser->get_parser()->head->get_datatype();
+							}
+							found = true;
+						}
+					}
+
+					// Wildcard imports.
+					if (!found) {
+						for (const KeyValue<StringName, StringName> &E : imports) {
+							if (E.key == E.value) {
+								String qualified_name = String(E.value) + "." + String(name);
+								if (ScriptServer::is_global_class(qualified_name)) {
+									String base_path = ScriptServer::get_global_class_path(qualified_name);
+									if (GDScript::is_canonically_equal_paths(base_path, parser->script_path)) {
+										base = parser->head->get_datatype();
+									} else {
+										Ref<GDScriptParserRef> base_parser = parser->get_depended_parser_for(base_path);
+										if (base_parser.is_null()) {
+											push_error(vformat(R"(Could not resolve super class "%s".)", qualified_name), id);
+											return ERR_PARSE_ERROR;
+										}
+										Error err = base_parser->raise_status(GDScriptParserRef::INHERITANCE_SOLVED);
+										if (err != OK) {
+											push_error(vformat(R"(Could not resolve super class inheritance from "%s".)", qualified_name), id);
+											return err;
+										}
+										base = base_parser->get_parser()->head->get_datatype();
+									}
+									found = true;
+									break;
+								}
+							}
+						}
+					}
+				}
+
+				// If not found, try joining the extends chain as a namespaced global class.
+				if (!found && p_class->extends.size() > 1) {
+					String qualified_name = String(p_class->extends[0]->name);
+					for (int i = 1; i < p_class->extends.size(); i++) {
+						qualified_name += "." + String(p_class->extends[i]->name);
+					}
+					if (ScriptServer::is_global_class(qualified_name)) {
+						String base_path = ScriptServer::get_global_class_path(qualified_name);
+						if (GDScript::is_canonically_equal_paths(base_path, parser->script_path)) {
+							base = parser->head->get_datatype();
+						} else {
+							Ref<GDScriptParserRef> base_parser = parser->get_depended_parser_for(base_path);
+							if (base_parser.is_null()) {
+								push_error(vformat(R"(Could not resolve super class "%s".)", qualified_name), id);
+								return ERR_PARSE_ERROR;
+							}
+							Error err = base_parser->raise_status(GDScriptParserRef::INHERITANCE_SOLVED);
+							if (err != OK) {
+								push_error(vformat(R"(Could not resolve super class inheritance from "%s".)", qualified_name), id);
+								return err;
+							}
+							base = base_parser->get_parser()->head->get_datatype();
+						}
+						found = true;
+						extends_index = p_class->extends.size(); // Skip remaining chain processing.
+					}
+				}
+
 				if (!found) {
 					push_error(vformat(R"(Could not find base class "%s".)", name), id);
 					return ERR_PARSE_ERROR;
@@ -896,6 +982,87 @@ GDScriptParser::DataType GDScriptAnalyzer::resolve_datatype(GDScriptParser::Type
 							return bad_type;
 					}
 				}
+			}
+		}
+	}
+
+	// Check imports for type resolution.
+	if (!result.is_set()) {
+		const HashMap<StringName, StringName> &imports = parser->head->imports;
+
+		// Direct import: "Goblin" -> "Enemies.Goblin"
+		if (imports.has(first)) {
+			const StringName &qualified_name = imports[first];
+			if (ScriptServer::is_global_class(qualified_name)) {
+				String path = ScriptServer::get_global_class_path(qualified_name);
+				String ext = path.get_extension();
+				if (ext == GDScriptLanguage::get_singleton()->get_extension()) {
+					Ref<GDScriptParserRef> ref = parser->get_depended_parser_for(path);
+					if (ref.is_valid() && ref->raise_status(GDScriptParserRef::INHERITANCE_SOLVED) == OK) {
+						result = ref->get_parser()->head->get_datatype();
+					}
+				} else {
+					result = make_script_meta_type(ResourceLoader::load(path, "Script"));
+				}
+			}
+		}
+
+		// Wildcard imports: "Goblin" -> try "Enemies.Goblin" for each wildcard.
+		if (!result.is_set()) {
+			for (const KeyValue<StringName, StringName> &E : imports) {
+				if (E.key == E.value) {
+					String qualified_name = String(E.value) + "." + String(first);
+					if (ScriptServer::is_global_class(qualified_name)) {
+						String path = ScriptServer::get_global_class_path(qualified_name);
+						String ext = path.get_extension();
+						if (ext == GDScriptLanguage::get_singleton()->get_extension()) {
+							Ref<GDScriptParserRef> ref = parser->get_depended_parser_for(path);
+							if (ref.is_valid() && ref->raise_status(GDScriptParserRef::INHERITANCE_SOLVED) == OK) {
+								result = ref->get_parser()->head->get_datatype();
+							}
+						} else {
+							result = make_script_meta_type(ResourceLoader::load(path, "Script"));
+						}
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	// If the first identifier wasn't resolved and we have a dotted chain, try
+	// joining the chain as a namespaced global class name (e.g. "Enemies.Goblin").
+	if (!result.is_set() && p_type->type_chain.size() > 1) {
+		for (int attempt_len = p_type->type_chain.size(); attempt_len >= 2; attempt_len--) {
+			String qualified_name = String(p_type->type_chain[0]->name);
+			for (int i = 1; i < attempt_len; i++) {
+				qualified_name += "." + String(p_type->type_chain[i]->name);
+			}
+			if (ScriptServer::is_global_class(qualified_name)) {
+				String path = ScriptServer::get_global_class_path(qualified_name);
+				String ext = path.get_extension();
+				if (ext == GDScriptLanguage::get_singleton()->get_extension()) {
+					Ref<GDScriptParserRef> ref = parser->get_depended_parser_for(path);
+					if (ref.is_null() || ref->raise_status(GDScriptParserRef::INHERITANCE_SOLVED) != OK) {
+						push_error(vformat(R"(Could not parse global class "%s" from "%s".)", qualified_name, path), p_type);
+						return bad_type;
+					}
+					result = ref->get_parser()->head->get_datatype();
+				} else {
+					result = make_script_meta_type(ResourceLoader::load(path, "Script"));
+				}
+
+				// If the entire chain was consumed, we're done. Otherwise, the remaining
+				// chain elements will be resolved as nested types below.
+				if (attempt_len == p_type->type_chain.size()) {
+					p_type->set_datatype(result);
+					return result;
+				}
+
+				// Adjust type_chain processing to start after the consumed elements.
+				// We handle this by jumping into the existing chain resolution below.
+				// For now, we only support fully-consumed namespace chains in type hints.
+				break;
 			}
 		}
 	}
@@ -4651,6 +4818,52 @@ void GDScriptAnalyzer::reduce_identifier(GDScriptParser::IdentifierNode *p_ident
 		return;
 	}
 
+	// Check imports from the current script.
+	{
+		const HashMap<StringName, StringName> &imports = parser->head->imports;
+
+		// Direct import: import Enemies.Goblin -> "Goblin" maps to "Enemies.Goblin"
+		if (imports.has(name)) {
+			const StringName &qualified_name = imports[name];
+			if (ScriptServer::is_global_class(qualified_name)) {
+				p_identifier->name = qualified_name; // Rewrite to fully qualified name for the compiler.
+				p_identifier->set_datatype(make_global_class_meta_type(qualified_name, p_identifier));
+				return;
+			}
+		}
+
+		// Wildcard imports: import Enemies -> try "Enemies.{name}" for each wildcard.
+		for (const KeyValue<StringName, StringName> &E : imports) {
+			if (E.key == E.value) {
+				// This is a wildcard import (key == value means "import Prefix").
+				String qualified_name = String(E.value) + "." + String(name);
+				if (ScriptServer::is_global_class(qualified_name)) {
+					p_identifier->name = qualified_name; // Rewrite to fully qualified name for the compiler.
+					p_identifier->set_datatype(make_global_class_meta_type(qualified_name, p_identifier));
+					return;
+				}
+			}
+		}
+	}
+
+	// Check if this identifier is a namespace prefix (e.g. "Enemies" when "Enemies.Goblin" exists).
+	{
+		String prefix = String(name) + ".";
+		LocalVector<StringName> global_classes;
+		ScriptServer::get_global_class_list(global_classes);
+		for (const StringName &class_name : global_classes) {
+			if (String(class_name).begins_with(prefix)) {
+				GDScriptParser::DataType ns_type;
+				ns_type.kind = GDScriptParser::DataType::NAMESPACE;
+				ns_type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+				ns_type.is_meta_type = true;
+				ns_type.native_type = name; // Store the namespace prefix.
+				p_identifier->set_datatype(ns_type);
+				return;
+			}
+		}
+	}
+
 	// Not found.
 #ifdef SUGGEST_GODOT4_RENAMES
 	String rename_hint;
@@ -4827,6 +5040,40 @@ void GDScriptAnalyzer::reduce_subscript(GDScriptParser::SubscriptNode *p_subscri
 
 		if (valid) {
 			// Do nothing.
+		} else if (base_type.kind == GDScriptParser::DataType::NAMESPACE) {
+			// Namespace prefix: try concatenating with the attribute to form a class or deeper namespace.
+			String qualified_name = String(base_type.native_type) + "." + String(p_subscript->attribute->name);
+			if (ScriptServer::is_global_class(qualified_name)) {
+				valid = true;
+				String path = ScriptServer::get_global_class_path(qualified_name);
+				String ext = path.get_extension();
+				if (ext == GDScriptLanguage::get_singleton()->get_extension()) {
+					Ref<GDScriptParserRef> ref = parser->get_depended_parser_for(path);
+					if (ref.is_valid() && ref->raise_status(GDScriptParserRef::INHERITANCE_SOLVED) == OK) {
+						result_type = ref->get_parser()->head->get_datatype();
+					}
+				} else {
+					result_type = make_script_meta_type(ResourceLoader::load(path, "Script"));
+				}
+			} else {
+				// Check if it's a deeper namespace prefix.
+				String prefix = qualified_name + ".";
+				LocalVector<StringName> global_classes;
+				ScriptServer::get_global_class_list(global_classes);
+				for (const StringName &class_name : global_classes) {
+					if (String(class_name).begins_with(prefix)) {
+						valid = true;
+						result_type.kind = GDScriptParser::DataType::NAMESPACE;
+						result_type.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+						result_type.is_meta_type = true;
+						result_type.native_type = qualified_name;
+						break;
+					}
+				}
+			}
+			if (!valid) {
+				push_error(vformat(R"(Could not find class or namespace "%s".)", qualified_name), p_subscript->attribute);
+			}
 		} else if (base_type.is_variant() || !base_type.is_hard_type()) {
 			valid = !base_type.is_pseudo_type || p_can_be_pseudo_type;
 			result_type.kind = GDScriptParser::DataType::VARIANT;
@@ -6422,6 +6669,7 @@ bool GDScriptAnalyzer::check_type_compatibility(const GDScriptParser::DataType &
 		case GDScriptParser::DataType::ENUM:
 		case GDScriptParser::DataType::RESOLVING:
 		case GDScriptParser::DataType::UNRESOLVED:
+		case GDScriptParser::DataType::NAMESPACE:
 			break; // Already solved before.
 	}
 
@@ -6459,6 +6707,7 @@ bool GDScriptAnalyzer::check_type_compatibility(const GDScriptParser::DataType &
 		case GDScriptParser::DataType::ENUM:
 		case GDScriptParser::DataType::RESOLVING:
 		case GDScriptParser::DataType::UNRESOLVED:
+		case GDScriptParser::DataType::NAMESPACE:
 			break; // Already solved before.
 	}
 
