@@ -111,6 +111,7 @@ public:
 			VARIANT, // Can be any type.
 			RESOLVING, // Currently resolving.
 			UNRESOLVED,
+			NAMESPACE, // A namespace prefix for dotted class names (e.g. "Enemies" when "Enemies.Goblin" exists).
 		};
 		Kind kind = UNRESOLVED;
 
@@ -218,6 +219,8 @@ public:
 					return script_type == p_other.script_type;
 				case CLASS:
 					return class_type == p_other.class_type || class_type->fqcn == p_other.class_type->fqcn;
+				case NAMESPACE:
+					return native_type == p_other.native_type;
 				case RESOLVING:
 				case UNRESOLVED:
 					break;
@@ -750,6 +753,15 @@ public:
 		Vector<Member> members;
 		HashMap<StringName, int> members_indices;
 		ClassNode *outer = nullptr;
+
+		// Namespace imports: maps short name -> fully qualified class name.
+		HashMap<StringName, StringName> imports;
+		// Wildcard imports: namespace prefixes where all classes are available by short name.
+		Vector<String> wildcard_imports;
+
+		// Namespace prefix set by the `namespace` keyword (e.g. "Enemies").
+		String namespace_prefix;
+
 		bool extends_used = false;
 		bool onready_used = false;
 		bool is_abstract = false;
@@ -1538,6 +1550,8 @@ private:
 	void parse_program();
 	ClassNode *parse_class(bool p_is_static);
 	void parse_class_name();
+	void parse_namespace();
+	void parse_import();
 	void parse_extends();
 	void parse_class_body(bool p_is_multiline);
 	template <typename T>

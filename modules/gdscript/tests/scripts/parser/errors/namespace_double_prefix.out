@@ -1,0 +1,2 @@
+GDTEST_PARSER_ERROR
+Dotted class_name "Other.Goblin" cannot be combined with a namespace declaration. Use a simple name like "class_name Goblin" instead.
