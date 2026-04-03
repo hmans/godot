@@ -598,29 +598,27 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 
 					// Wildcard imports.
 					if (!found) {
-						for (const KeyValue<StringName, StringName> &E : imports) {
-							if (E.key == E.value) {
-								String qualified_name = String(E.value) + "." + String(name);
-								if (ScriptServer::is_global_class(qualified_name)) {
-									String base_path = ScriptServer::get_global_class_path(qualified_name);
-									if (GDScript::is_canonically_equal_paths(base_path, parser->script_path)) {
-										base = parser->head->get_datatype();
-									} else {
-										Ref<GDScriptParserRef> base_parser = parser->get_depended_parser_for(base_path);
-										if (base_parser.is_null()) {
-											push_error(vformat(R"(Could not resolve super class "%s".)", qualified_name), id);
-											return ERR_PARSE_ERROR;
-										}
-										Error err = base_parser->raise_status(GDScriptParserRef::INHERITANCE_SOLVED);
-										if (err != OK) {
-											push_error(vformat(R"(Could not resolve super class inheritance from "%s".)", qualified_name), id);
-											return err;
-										}
-										base = base_parser->get_parser()->head->get_datatype();
+						for (const String &prefix : parser->head->wildcard_imports) {
+							String qualified_name = prefix + "." + String(name);
+							if (ScriptServer::is_global_class(qualified_name)) {
+								String base_path = ScriptServer::get_global_class_path(qualified_name);
+								if (GDScript::is_canonically_equal_paths(base_path, parser->script_path)) {
+									base = parser->head->get_datatype();
+								} else {
+									Ref<GDScriptParserRef> base_parser = parser->get_depended_parser_for(base_path);
+									if (base_parser.is_null()) {
+										push_error(vformat(R"(Could not resolve super class "%s".)", qualified_name), id);
+										return ERR_PARSE_ERROR;
 									}
-									found = true;
-									break;
+									Error err = base_parser->raise_status(GDScriptParserRef::INHERITANCE_SOLVED);
+									if (err != OK) {
+										push_error(vformat(R"(Could not resolve super class inheritance from "%s".)", qualified_name), id);
+										return err;
+									}
+									base = base_parser->get_parser()->head->get_datatype();
 								}
+								found = true;
+								break;
 							}
 						}
 					}
@@ -1009,22 +1007,20 @@ GDScriptParser::DataType GDScriptAnalyzer::resolve_datatype(GDScriptParser::Type
 
 		// Wildcard imports: "Goblin" -> try "Enemies.Goblin" for each wildcard.
 		if (!result.is_set()) {
-			for (const KeyValue<StringName, StringName> &E : imports) {
-				if (E.key == E.value) {
-					String qualified_name = String(E.value) + "." + String(first);
-					if (ScriptServer::is_global_class(qualified_name)) {
-						String path = ScriptServer::get_global_class_path(qualified_name);
-						String ext = path.get_extension();
-						if (ext == GDScriptLanguage::get_singleton()->get_extension()) {
-							Ref<GDScriptParserRef> ref = parser->get_depended_parser_for(path);
-							if (ref.is_valid() && ref->raise_status(GDScriptParserRef::INHERITANCE_SOLVED) == OK) {
-								result = ref->get_parser()->head->get_datatype();
-							}
-						} else {
-							result = make_script_meta_type(ResourceLoader::load(path, "Script"));
+			for (const String &prefix : parser->head->wildcard_imports) {
+				String qualified_name = prefix + "." + String(first);
+				if (ScriptServer::is_global_class(qualified_name)) {
+					String path = ScriptServer::get_global_class_path(qualified_name);
+					String ext = path.get_extension();
+					if (ext == GDScriptLanguage::get_singleton()->get_extension()) {
+						Ref<GDScriptParserRef> ref = parser->get_depended_parser_for(path);
+						if (ref.is_valid() && ref->raise_status(GDScriptParserRef::INHERITANCE_SOLVED) == OK) {
+							result = ref->get_parser()->head->get_datatype();
 						}
-						break;
+					} else {
+						result = make_script_meta_type(ResourceLoader::load(path, "Script"));
 					}
+					break;
 				}
 			}
 		}
@@ -4833,15 +4829,12 @@ void GDScriptAnalyzer::reduce_identifier(GDScriptParser::IdentifierNode *p_ident
 		}
 
 		// Wildcard imports: import Enemies -> try "Enemies.{name}" for each wildcard.
-		for (const KeyValue<StringName, StringName> &E : imports) {
-			if (E.key == E.value) {
-				// This is a wildcard import (key == value means "import Prefix").
-				String qualified_name = String(E.value) + "." + String(name);
-				if (ScriptServer::is_global_class(qualified_name)) {
-					p_identifier->name = qualified_name; // Rewrite to fully qualified name for the compiler.
-					p_identifier->set_datatype(make_global_class_meta_type(qualified_name, p_identifier));
-					return;
-				}
+		for (const String &prefix : parser->head->wildcard_imports) {
+			String qualified_name = prefix + "." + String(name);
+			if (ScriptServer::is_global_class(qualified_name)) {
+				p_identifier->name = qualified_name; // Rewrite to fully qualified name for the compiler.
+				p_identifier->set_datatype(make_global_class_meta_type(qualified_name, p_identifier));
+				return;
 			}
 		}
 	}

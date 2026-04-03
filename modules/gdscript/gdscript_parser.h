@@ -756,6 +756,8 @@ public:
 
 		// Namespace imports: maps short name -> fully qualified class name.
 		HashMap<StringName, StringName> imports;
+		// Wildcard imports: namespace prefixes where all classes are available by short name.
+		Vector<String> wildcard_imports;
 
 		// Namespace prefix set by the `namespace` keyword (e.g. "Enemies").
 		String namespace_prefix;

@@ -832,9 +832,17 @@ void GDScriptParser::parse_program() {
 
 	// Apply namespace prefix to class_name if both are present.
 	if (!head->namespace_prefix.is_empty() && head->identifier != nullptr) {
-		String full_name = head->namespace_prefix + "." + String(head->identifier->name);
-		head->identifier->name = full_name;
-		head->fqcn = full_name;
+		String class_name = String(head->identifier->name);
+		if (class_name.begins_with(head->namespace_prefix + ".")) {
+			// class_name already includes the namespace prefix (e.g. namespace Enemies + class_name Enemies.Goblin).
+			// Don't double-prefix — just keep it as-is.
+		} else if (class_name.contains(".")) {
+			push_error(vformat(R"(Dotted class_name "%s" cannot be combined with a namespace declaration. Use a simple name like "class_name %s" instead.)", class_name, class_name.get_slicec('.', class_name.get_slice_count(".") - 1)));
+		} else {
+			String full_name = head->namespace_prefix + "." + class_name;
+			head->identifier->name = full_name;
+			head->fqcn = full_name;
+		}
 	}
 
 	for (AnnotationNode *&annotation : head->annotations) {
@@ -1058,7 +1066,7 @@ void GDScriptParser::parse_namespace() {
 	current_class->namespace_prefix = ns;
 
 	// Implicitly import the namespace so all its classes are available by short name.
-	current_class->imports[ns] = ns;
+	current_class->wildcard_imports.push_back(ns);
 
 	end_statement("namespace statement");
 }
@@ -1090,11 +1098,13 @@ void GDScriptParser::parse_import() {
 			}
 			StringName alias = previous.get_identifier();
 			current_class->imports[alias] = full_name;
-		} else {
+		} else if (full_name.contains(".")) {
 			// import Enemies.Goblin -> short name is "Goblin"
-			// import Enemies        -> short name is "Enemies" (wildcard)
 			String short_name = full_name.get_slicec('.', full_name.get_slice_count(".") - 1);
 			current_class->imports[short_name] = full_name;
+		} else {
+			// import Enemies -> wildcard import of all Enemies.* classes
+			current_class->wildcard_imports.push_back(full_name);
 		}
 	} while (match(GDScriptTokenizer::Token::COMMA));
 

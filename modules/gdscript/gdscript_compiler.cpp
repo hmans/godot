@@ -267,6 +267,8 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 			// Namespace identifiers have no runtime value — they're resolved
 			// through the subscript chain at compile time.
 			if (in->get_datatype().kind == GDScriptParser::DataType::NAMESPACE) {
+				_set_error(vformat(R"(Cannot use namespace "%s" as a value.)", in->name), in);
+				r_error = ERR_COMPILATION_FAILED;
 				return GDScriptCodeGenerator::Address();
 			}
 
